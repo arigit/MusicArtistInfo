@@ -265,7 +265,9 @@ sub _precacheArtistImage {
 	$specs    ||= join(',', Slim::Music::Artwork::getResizeSpecs());
 	$cachedir ||= $serverprefs->get('cachedir');
 
-	if ( $imageFolder && !($artist_id && $img) && $saveMissingArtistPicturePlaceholder ) {
+	my $url = $img->{url} if ref $img eq 'HASH';
+
+	if ( $imageFolder && $saveMissingArtistPicturePlaceholder && !($artist_id && ($img && ref $img ? $url : $img)) ) {
 		my $file = Plugins::MusicArtistInfo::Importer::filename('', $imageFolder, $artist->{name});
 		$file =~ s/\.$/\.missing/;
 		if (!-f $file) {
@@ -276,8 +278,7 @@ sub _precacheArtistImage {
 
 	return unless $artist_id;
 
-	if ( ref $img eq 'HASH' && (my $url = $img->{url}) ) {
-
+	if ($url) {
 		$url =~ s/\/_\//\/$max\// if $max;
 
 		main::INFOLOG && $log->is_info && $log->info("Getting $url to be pre-cached");
