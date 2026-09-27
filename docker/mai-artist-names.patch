@@ -1,8 +1,18 @@
 diff --git a/API.pm b/API.pm
-index f4fe8d4..2fe8ed0 100644
+index f4fe8d4..cf279ad 100644
 --- a/API.pm
 +++ b/API.pm
-@@ -53,7 +53,8 @@ sub getArtistPhoto {
+@@ -22,6 +22,9 @@ use constant WORKREVIEW_URL  => BASE_URL . '/work/%s/%s/review';
+ use constant LYRICS_PROVIDERS_URL => BASE_URL . '/metadata/lyricsProviders';
+ use constant KILLWORDS_URL   => BASE_URL . '/metadata/killwords';
+ 
++# Deezer hands out a generic "no picture" silhouette for artists without a photo - that's no picture
++use constant PLACEHOLDER_PICTURE_URL => qr{/images/artist/(?:d41d8cd98f00b204e9800998ecf8427e)?/};
++
+ use constant PLUGIN_PACKAGE => __PACKAGE__ =~ s/\b(?:\w+)$/Plugin/r;
+ 
+ my $cache = Slim::Utils::Cache->new();
+@@ -53,11 +56,12 @@ sub getArtistPhoto {
  	my ( $class, $cb, $args ) = @_;
  
  	my $query = _getArtistQueryParams($args);
@@ -12,6 +22,29 @@ index f4fe8d4..2fe8ed0 100644
  	my $cacheKey = "mai_artist_artwork_$url";
  
  	my $cached = $cache->get($cacheKey);
+-	if (defined $cached) {
++	if (defined $cached && $cached !~ PLACEHOLDER_PICTURE_URL) {
+ 		main::INFOLOG && $log->is_info && $log->info("Using cached artist picture: $cached");
+ 		return $cb->({ url => $cached });
+ 	}
+@@ -70,9 +74,14 @@ sub getArtistPhoto {
+ 			my $photo;
+ 
+ 			if ($result && ref $result && (my $url = $result->{picture})) {
+-				$photo = {
+-					url => $url,
+-				};
++				if ($url =~ PLACEHOLDER_PICTURE_URL) {
++					main::INFOLOG && $log->is_info && $log->info("Ignoring placeholder artist picture: $url");
++				}
++				else {
++					$photo = {
++						url => $url,
++					};
++				}
+ 			}
+ 
+ 			$cache->set($cacheKey, $photo->{url}, '1y') if $photo->{url};
 diff --git a/ArtistInfo.pm b/ArtistInfo.pm
 index 3949c98..b438d88 100644
 --- a/ArtistInfo.pm
@@ -120,10 +153,23 @@ index 3886e81..a7657f1 100644
  	my $class = shift;
  
 diff --git a/Importer2.pm b/Importer2.pm
-index 53e34af..a60ae96 100644
+index 53e34af..beb81ec 100644
 --- a/Importer2.pm
 +++ b/Importer2.pm
-@@ -268,7 +268,7 @@ sub _precacheArtistImage {
+@@ -19,6 +19,12 @@ use Plugins::MusicArtistInfo::API;
+ use Plugins::MusicArtistInfo::LocalArtwork;
+ 
+ use constant MAX_IMAGE_SIZE => 3072 * 3072;
++
++# MD5 of Deezer's generic "no picture" silhouette - in case it's served under some other URL
++use constant PLACEHOLDER_IMAGE_MD5 => {
++	cf0b6a5247e606f67470140451774cb5 => 1,
++	'3a0adf20e5abdafa2c1f954ca4537f36' => 1,
++};
+ use constant IS_ONLINE_LIBRARY_SCAN => main::SCANNER && $ARGV[-1] && $ARGV[-1] eq 'onlinelibrary' ? 1 : 0;
+ 
+ # this holds pointers to functions handling a given artist external ID
+@@ -268,7 +274,7 @@ sub _precacheArtistImage {
  	my $url = $img->{url} if ref $img eq 'HASH';
  
  	if ( $imageFolder && $saveMissingArtistPicturePlaceholder && !($artist_id && ($img && ref $img ? $url : $img)) ) {
@@ -132,7 +178,7 @@ index 53e34af..a60ae96 100644
  		$file =~ s/\.$/\.missing/;
  		if (!-f $file) {
  			main::INFOLOG && $log->is_info && $log->info("Putting placeholder file '$file'");
-@@ -287,7 +287,7 @@ sub _precacheArtistImage {
+@@ -287,7 +293,7 @@ sub _precacheArtistImage {
  
  		# if user wants us to save a copy on the disk, write to our image folder instead
  		if ($imageFolder) {
@@ -141,3 +187,34 @@ index 53e34af..a60ae96 100644
  		}
  		else {
  			$file = catdir( $cachedir, 'imgproxy_' . Digest::MD5::md5_hex($url) );
+@@ -329,6 +335,13 @@ sub _precacheArtistImage {
+ 			}
+ 		}
+ 
++		if (-f $file && _isPlaceholderImage($file)) {
++			main::INFOLOG && $log->is_info && $log->info("Discarding placeholder picture for " . $artist->{name});
++			unlink $file;
++			_precacheArtistImage({ name => $artist->{name} }, undef) if $saveMissingArtistPicturePlaceholder;
++			return;
++		}
++
+ 		return if CAN_LMS_ARTIST_ARTWORK;
+ 		return unless $precacheArtwork && -f $file;
+ 
+@@ -357,6 +370,16 @@ sub _precacheArtistImage {
+ 	}
+ }
+ 
++sub _isPlaceholderImage {
++	my ($file) = @_;
++
++	open(my $fh, '<:raw', $file) or return;
++	my $md5 = Digest::MD5->new->addfile($fh)->hexdigest;
++	close $fh;
++
++	return PLACEHOLDER_IMAGE_MD5->{$md5};
++}
++
+ sub _cacheFolder {
+ 	catdir($serverprefs->get('cachedir'), 'mai_portraits');
+ }

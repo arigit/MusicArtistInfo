@@ -22,6 +22,9 @@ use constant WORKREVIEW_URL  => BASE_URL . '/work/%s/%s/review';
 use constant LYRICS_PROVIDERS_URL => BASE_URL . '/metadata/lyricsProviders';
 use constant KILLWORDS_URL   => BASE_URL . '/metadata/killwords';
 
+# Deezer hands out a generic "no picture" silhouette for artists without a photo - that's no picture
+use constant PLACEHOLDER_PICTURE_URL => qr{/images/artist/(?:d41d8cd98f00b204e9800998ecf8427e)?/};
+
 use constant PLUGIN_PACKAGE => __PACKAGE__ =~ s/\b(?:\w+)$/Plugin/r;
 
 my $cache = Slim::Utils::Cache->new();
@@ -58,7 +61,7 @@ sub getArtistPhoto {
 	my $cacheKey = "mai_artist_artwork_$url";
 
 	my $cached = $cache->get($cacheKey);
-	if (defined $cached) {
+	if (defined $cached && $cached !~ PLACEHOLDER_PICTURE_URL) {
 		main::INFOLOG && $log->is_info && $log->info("Using cached artist picture: $cached");
 		return $cb->({ url => $cached });
 	}
@@ -71,9 +74,14 @@ sub getArtistPhoto {
 			my $photo;
 
 			if ($result && ref $result && (my $url = $result->{picture})) {
-				$photo = {
-					url => $url,
-				};
+				if ($url =~ PLACEHOLDER_PICTURE_URL) {
+					main::INFOLOG && $log->is_info && $log->info("Ignoring placeholder artist picture: $url");
+				}
+				else {
+					$photo = {
+						url => $url,
+					};
+				}
 			}
 
 			$cache->set($cacheKey, $photo->{url}, '1y') if $photo->{url};

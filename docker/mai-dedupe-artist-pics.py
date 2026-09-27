@@ -24,10 +24,15 @@ so no composer ends up without a picture (dry run too, add --apply):
     sudo python3 mai-dedupe-artist-pics.py --restore
     sudo python3 mai-dedupe-artist-pics.py --restore --apply
 
+--placeholders also moves copies of Deezer's generic "no picture" silhouette, which older
+lookups saved as if they were real photos. They block any further lookup for that artist.
+After "Clear library and rescan everything" MAI looks those artists up again.
+
 Every move is recorded in <backup>/manifest.tsv.
 """
 
 import argparse
+import hashlib
 import os
 import re
 import shutil
@@ -36,6 +41,7 @@ import sys
 
 EXTENSIONS = ('jpg', 'png', 'jpeg', 'JPG', 'PNG', 'JPEG')   # same order as LMS' picture scan
 MANIFEST = 'manifest.tsv'
+PLACEHOLDER_MD5 = {'cf0b6a5247e606f67470140451774cb5', '3a0adf20e5abdafa2c1f954ca4537f36'}   # Deezer's "no picture" silhouette
 SUFFIX = re.compile(r'^(?:jr|sr|[ivx]+)\.?$', re.I)
 
 
@@ -110,6 +116,7 @@ def main():
     ap.add_argument('--backup', help='where --apply moves duplicates (default: <lyrion>/mai-removed-duplicates)')
     ap.add_argument('--apply', action='store_true', help='actually move the duplicates')
     ap.add_argument('--orphans', action='store_true', help='also move raw-name pictures without a "Given Family" picture, to have them looked up again')
+    ap.add_argument('--placeholders', action='store_true', help='also move copies of Deezer\'s generic "no picture" silhouette, to have them looked up again')
     ap.add_argument('--restore', action='store_true', help='move back orphans which still have no "Given Family" picture after the rescan')
     args = ap.parse_args()
 
@@ -160,6 +167,22 @@ def main():
             for raw, f in orphans:
                 moves[f] = ('orphan', raw, normalize_artist_name(raw))
 
+    if args.placeholders:
+        placeholders = []
+        for f in sorted(files):
+            path = os.path.join(folder, f)
+            # artist.jpg is MAI's configured fallback picture - it may well be this very silhouette
+            if os.path.splitext(f)[0].lower() in ('artist', 'composer'):
+                continue
+            if f not in moves and os.path.isfile(path) and os.path.getsize(path) < 100_000:
+                with open(path, 'rb') as fh:
+                    if hashlib.md5(fh.read()).hexdigest() in PLACEHOLDER_MD5:
+                        placeholders.append(f)
+        print(f'\n{len(placeholders)} placeholder silhouette(s): {", ".join(placeholders[:10])}{", ..." if len(placeholders) > 10 else ""}')
+        for f in placeholders:
+            stem = os.path.splitext(f)[0]
+            moves[f] = ('placeholder', stem, stem)
+
     print(f'\n{len(moves)} picture(s) to move.')
 
     if not moves:
@@ -179,8 +202,8 @@ def main():
             manifest.write('\t'.join((kind, raw, good_name, f, target)) + '\n')
 
     print(f'Moved to {backup}.')
-    if args.orphans:
-        print('Now run "Clear library and rescan everything" in LMS, then --restore.')
+    if args.orphans or args.placeholders:
+        print('Now run "Clear library and rescan everything" in LMS' + (', then --restore.' if args.orphans else '.'))
     else:
         print('Now rescan in LMS so the composers pick up the "Given Family" pictures.')
 

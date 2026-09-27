@@ -19,6 +19,12 @@ use Plugins::MusicArtistInfo::API;
 use Plugins::MusicArtistInfo::LocalArtwork;
 
 use constant MAX_IMAGE_SIZE => 3072 * 3072;
+
+# MD5 of Deezer's generic "no picture" silhouette - in case it's served under some other URL
+use constant PLACEHOLDER_IMAGE_MD5 => {
+	cf0b6a5247e606f67470140451774cb5 => 1,
+	'3a0adf20e5abdafa2c1f954ca4537f36' => 1,
+};
 use constant IS_ONLINE_LIBRARY_SCAN => main::SCANNER && $ARGV[-1] && $ARGV[-1] eq 'onlinelibrary' ? 1 : 0;
 
 # this holds pointers to functions handling a given artist external ID
@@ -329,6 +335,13 @@ sub _precacheArtistImage {
 			}
 		}
 
+		if (-f $file && _isPlaceholderImage($file)) {
+			main::INFOLOG && $log->is_info && $log->info("Discarding placeholder picture for " . $artist->{name});
+			unlink $file;
+			_precacheArtistImage({ name => $artist->{name} }, undef) if $saveMissingArtistPicturePlaceholder;
+			return;
+		}
+
 		return if CAN_LMS_ARTIST_ARTWORK;
 		return unless $precacheArtwork && -f $file;
 
@@ -355,6 +368,16 @@ sub _precacheArtistImage {
 
 		Slim::Utils::ImageResizer->resize($img, "imageproxy/mai/artist/$artist_id/image_", $specs, undef, $imgProxyCache );
 	}
+}
+
+sub _isPlaceholderImage {
+	my ($file) = @_;
+
+	open(my $fh, '<:raw', $file) or return;
+	my $md5 = Digest::MD5->new->addfile($fh)->hexdigest;
+	close $fh;
+
+	return PLACEHOLDER_IMAGE_MD5->{$md5};
 }
 
 sub _cacheFolder {
