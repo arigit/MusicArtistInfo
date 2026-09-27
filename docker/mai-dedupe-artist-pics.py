@@ -15,7 +15,16 @@ Run it after a scan has finished, then rescan so LMS drops the moved pictures.
     sudo python3 mai-dedupe-artist-pics.py --apply         # move them
 
 --orphans also moves raw-name pictures that have no "Given Family" counterpart, so the
-next scan looks them up again (online) under the "Given Family" name.
+next scan looks them up again (online) under the "Given Family" name. That needs a
+"Clear library and rescan everything" scan.
+
+--restore puts moved orphans back if that scan found no "Given Family" picture for them,
+so no composer ends up without a picture (dry run too, add --apply):
+
+    sudo python3 mai-dedupe-artist-pics.py --restore
+    sudo python3 mai-dedupe-artist-pics.py --restore --apply
+
+Every move is recorded in <backup>/manifest.tsv.
 """
 
 import argparse
@@ -26,6 +35,7 @@ import sqlite3
 import sys
 
 EXTENSIONS = ('jpg', 'png', 'jpeg', 'JPG', 'PNG', 'JPEG')   # same order as LMS' picture scan
+MANIFEST = 'manifest.tsv'
 SUFFIX = re.compile(r'^(?:jr|sr|[ivx]+)\.?$', re.I)
 
 
@@ -100,6 +110,7 @@ def main():
     ap.add_argument('--backup', help='where --apply moves duplicates (default: <lyrion>/mai-removed-duplicates)')
     ap.add_argument('--apply', action='store_true', help='actually move the duplicates')
     ap.add_argument('--orphans', action='store_true', help='also move raw-name pictures without a "Given Family" picture, to have them looked up again')
+    ap.add_argument('--restore', action='store_true', help='move back orphans which still have no "Given Family" picture after the rescan')
     args = ap.parse_args()
 
     db = os.path.join(args.lyrion, 'cache', 'library.db')
@@ -110,6 +121,9 @@ def main():
 
     if not folder or not os.path.isdir(folder):
         sys.exit(f'Artist picture folder not found: {folder!r} - pass it with --folder')
+    if args.restore:
+        return restore(folder, backup, args.apply)
+
     if not os.path.isfile(db):
         sys.exit(f'Library database not found: {db}')
 
@@ -120,7 +134,7 @@ def main():
     files = set(os.listdir(folder))
     print(f'Folder: {folder}\n{len(names)} contributors with a comma, {len(files)} files\n')
 
-    moves, orphans = [], []
+    moves, orphans = {}, []
     for raw in names:
         good_name = normalize_artist_name(raw)
         if good_name == raw:
@@ -136,16 +150,16 @@ def main():
                 continue
             same = os.path.getsize(os.path.join(folder, dup)) == os.path.getsize(os.path.join(folder, good[0]))
             print(f'{raw!r}: {dup!r} -> use {good[0]!r}{"  (same size)" if same else ""}')
-            moves.append(dup)
+            moves[dup] = ('duplicate', raw, good_name)
 
     if orphans:
         print(f'\nRaw-name pictures without a "Given Family" picture{"" if args.orphans else " (kept - use --orphans to move them too)"}:')
         for raw, f in orphans:
             print(f'{raw!r}: {f!r}')
         if args.orphans:
-            moves += [f for _, f in orphans]
+            for raw, f in orphans:
+                moves[f] = ('orphan', raw, normalize_artist_name(raw))
 
-    moves = sorted(set(moves))
     print(f'\n{len(moves)} picture(s) to move.')
 
     if not moves:
@@ -155,9 +169,59 @@ def main():
         return
 
     os.makedirs(backup, exist_ok=True)
-    for f in moves:
-        shutil.move(os.path.join(folder, f), os.path.join(backup, f))
-    print(f'Moved to {backup}. Now rescan in LMS so the composers pick up the "Given Family" pictures.')
+    with open(os.path.join(backup, MANIFEST), 'a', encoding='utf-8') as manifest:
+        for f, (kind, raw, good_name) in sorted(moves.items()):
+            # don't overwrite what an earlier run moved there
+            target, n = f, 1
+            while os.path.exists(os.path.join(backup, target)):
+                target, n = f'{f}.{n}', n + 1
+            shutil.move(os.path.join(folder, f), os.path.join(backup, target))
+            manifest.write('\t'.join((kind, raw, good_name, f, target)) + '\n')
+
+    print(f'Moved to {backup}.')
+    if args.orphans:
+        print('Now run "Clear library and rescan everything" in LMS, then --restore.')
+    else:
+        print('Now rescan in LMS so the composers pick up the "Given Family" pictures.')
+
+
+def restore(folder, backup, apply):
+    path = os.path.join(backup, MANIFEST)
+    if not os.path.isfile(path):
+        sys.exit(f'Nothing to restore - no {path}')
+
+    with open(path, encoding='utf-8') as fh:
+        entries = [line.rstrip('\n').split('\t') for line in fh if line.strip()]
+
+    files = set(os.listdir(folder))
+    keep, back = [], []
+    for entry in entries:
+        kind, raw, good_name, f, target = entry
+        if (kind == 'orphan' and os.path.isfile(os.path.join(backup, target))
+                and not pictures_for(good_name, files) and f not in files):
+            back.append(entry)
+        else:
+            keep.append(entry)
+
+    for kind, raw, good_name, f, target in back:
+        print(f'{raw!r}: no {good_name!r} picture found - restore {f!r}')
+
+    orphans = sum(1 for e in entries if e[0] == 'orphan')
+    print(f'\n{len(back)} of {orphans} moved orphan(s) still have no "Given Family" picture.')
+
+    if not back:
+        return
+    if not apply:
+        print('Dry run - nothing changed. Re-run with --restore --apply to move them back to', folder)
+        return
+
+    for kind, raw, good_name, f, target in back:
+        shutil.move(os.path.join(backup, target), os.path.join(folder, f))
+
+    with open(path, 'w', encoding='utf-8') as fh:
+        fh.writelines('\t'.join(e) + '\n' for e in keep)
+
+    print(f'Restored to {folder}. Rescan in LMS to have them used again.')
 
 
 if __name__ == '__main__':
