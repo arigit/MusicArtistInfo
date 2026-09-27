@@ -1,0 +1,143 @@
+diff --git a/API.pm b/API.pm
+index f4fe8d4..2fe8ed0 100644
+--- a/API.pm
++++ b/API.pm
+@@ -53,7 +53,8 @@ sub getArtistPhoto {
+ 	my ( $class, $cb, $args ) = @_;
+ 
+ 	my $query = _getArtistQueryParams($args);
+-	my $url = sprintf(ARTISTIMAGESEARCH_URL, uri_escape_utf8($args->{artist})) . $query;
++	my $artist = Plugins::MusicArtistInfo::Common::normalizeArtistName($args->{artist});
++	my $url = sprintf(ARTISTIMAGESEARCH_URL, uri_escape_utf8($artist)) . $query;
+ 	my $cacheKey = "mai_artist_artwork_$url";
+ 
+ 	my $cached = $cache->get($cacheKey);
+diff --git a/ArtistInfo.pm b/ArtistInfo.pm
+index 3949c98..b438d88 100644
+--- a/ArtistInfo.pm
++++ b/ArtistInfo.pm
+@@ -448,7 +448,7 @@ sub _getArtistPhotos {
+ 	my $results = {};
+ 
+ 	my $args = {
+-		artist => $artist,
++		artist => Plugins::MusicArtistInfo::Common::normalizeArtistName($artist),
+ 		artist_id => $artist_id
+ 	};
+ 
+diff --git a/Common.pm b/Common.pm
+index dbcc580..d560034 100644
+--- a/Common.pm
++++ b/Common.pm
+@@ -247,9 +247,45 @@ sub fileInFolder {
+ 	return $file;
+ }
+ 
++# Our tags store (some) person names as "Family, Given [Middle...]" - eg. composers.
++# Flip them to "Given Family" so the same artist gets the same picture, regardless of
++# whether it was tagged as performer ("Miles Davis") or composer ("Davis, Miles").
++# Try hard not to break band names like "Earth, Wind & Fire" or "Tyler, The Creator".
++sub normalizeArtistName {
++	my ($name) = @_;
++
++	return $name unless defined $name && $name =~ /,/;
++
++	my ($family, $given, $suffix) = $name =~ /^\s*([^,]+?)\s*,\s*([^,]+?)\s*(?:,\s*([^,]+?)\s*)?$/;
++
++	return $name unless $family && $given;
++	return $name if $suffix && $suffix !~ /^(?:jr|sr|[ivx]+)\.?$/i;
++	return $name if $given =~ /^(?:jr|sr|[ivx]+)\.?$/i;                # "Harry Connick, Jr."
++	return $name if $given =~ /^(?:the|a|an)\s/i;                      # "Tyler, The Creator"
++	return $name if "$family $given" =~ /&|\+|\/|\band\b|\d/i;         # "Blood, Sweat & Tears", "10,000 Maniacs"
++
++	# "Miles Davis, John Coltrane" is a list of artists, not "Family, Given" - but "de Falla, Manuel María" is fine
++	return $name if $family =~ /^\p{Lu}\S*\s+\S/ && $given =~ /\S\s+\S/;
++
++	return join(' ', grep { $_ } $given, $family, $suffix);
++}
++
+ sub getLocalnameVariants {
+ 	my ($name) = @_;
+ 
++	# prefer the "Given Family" file name, but still accept a file named after the raw tag
++	my $normalized = normalizeArtistName($name);
++	if ($normalized ne $name) {
++		my %seen;
++		return [ grep { !$seen{$_}++ } @{_getLocalnameVariants($normalized)}, @{_getLocalnameVariants($name)} ];
++	}
++
++	return _getLocalnameVariants($name);
++}
++
++sub _getLocalnameVariants {
++	my ($name) = @_;
++
+ 	# Remove wildcards and other stuff potentially conflicting with file system limitations
+ 	# For whatever reason those aren't removed by S::U::Misc::cleanupFilename()
+ 	$name =~ s/[:?*]//g;
+diff --git a/Importer.pm b/Importer.pm
+index 3886e81..a7657f1 100644
+--- a/Importer.pm
++++ b/Importer.pm
+@@ -26,6 +26,8 @@ my $serverprefs = preferences('server');
+ sub initPlugin {
+ 	my $class = shift;
+ 
++	_hookContributorPictureScan() if CAN_LMS_ARTIST_ARTWORK;
++
+ 	return unless $prefs->get('runImporter') && ($serverprefs->get('precacheArtwork') || $prefs->get('lookupArtistPictures') || $prefs->get('lookupCoverArt') || $prefs->get('replaceOnlineGenres'));
+ 
+ 	Slim::Music::Import->addImporter($class, {
+@@ -44,6 +46,30 @@ sub initPlugin {
+ 	return 1;
+ }
+ 
++# LMS 9.1+ assigns artist pictures in its own scanner, looking for files named after the raw
++# contributor name only. Teach it to also look for "Given Family" when tagged "Family, Given".
++sub _hookContributorPictureScan {
++	require Slim::Music::ContributorPictureScan;
++
++	my $sanitizedNameVariants = Slim::Music::ContributorPictureScan->can('sanitizedNameVariants') || do {
++		$log->warn("Can't find Slim::Music::ContributorPictureScan::sanitizedNameVariants - artist name normalization disabled for LMS' picture scan");
++		return;
++	};
++
++	no warnings 'redefine';
++	*Slim::Music::ContributorPictureScan::sanitizedNameVariants = sub {
++		my ($name) = @_;
++
++		my $normalized = Plugins::MusicArtistInfo::Common::normalizeArtistName($name);
++		return $sanitizedNameVariants->(@_) if $normalized eq $name;
++
++		return [ Slim::Utils::Misc::uniq(
++			@{$sanitizedNameVariants->($normalized)},
++			@{$sanitizedNameVariants->($name)},
++		) ];
++	};
++}
++
+ sub startScan {
+ 	my $class = shift;
+ 
+diff --git a/Importer2.pm b/Importer2.pm
+index 53e34af..a60ae96 100644
+--- a/Importer2.pm
++++ b/Importer2.pm
+@@ -268,7 +268,7 @@ sub _precacheArtistImage {
+ 	my $url = $img->{url} if ref $img eq 'HASH';
+ 
+ 	if ( $imageFolder && $saveMissingArtistPicturePlaceholder && !($artist_id && ($img && ref $img ? $url : $img)) ) {
+-		my $file = Plugins::MusicArtistInfo::Importer::filename('', $imageFolder, $artist->{name});
++		my $file = Plugins::MusicArtistInfo::Importer::filename('', $imageFolder, Plugins::MusicArtistInfo::Common::normalizeArtistName($artist->{name}));
+ 		$file =~ s/\.$/\.missing/;
+ 		if (!-f $file) {
+ 			main::INFOLOG && $log->is_info && $log->info("Putting placeholder file '$file'");
+@@ -287,7 +287,7 @@ sub _precacheArtistImage {
+ 
+ 		# if user wants us to save a copy on the disk, write to our image folder instead
+ 		if ($imageFolder) {
+-			$file = Plugins::MusicArtistInfo::Importer::filename($url, $imageFolder, $artist->{name});
++			$file = Plugins::MusicArtistInfo::Importer::filename($url, $imageFolder, Plugins::MusicArtistInfo::Common::normalizeArtistName($artist->{name}));
+ 		}
+ 		else {
+ 			$file = catdir( $cachedir, 'imgproxy_' . Digest::MD5::md5_hex($url) );
