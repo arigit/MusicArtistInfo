@@ -268,7 +268,7 @@ sub _precacheArtistImage {
 	my $url = $img->{url} if ref $img eq 'HASH';
 
 	if ( $imageFolder && $saveMissingArtistPicturePlaceholder && !($artist_id && ($img && ref $img ? $url : $img)) ) {
-		my $file = Plugins::MusicArtistInfo::Importer::filename('', $imageFolder, $artist->{name});
+		my $file = Plugins::MusicArtistInfo::Importer::filename('', $imageFolder, Plugins::MusicArtistInfo::Common::normalizeArtistName($artist->{name}));
 		$file =~ s/\.$/\.missing/;
 		if (!-f $file) {
 			main::INFOLOG && $log->is_info && $log->info("Putting placeholder file '$file'");
@@ -287,7 +287,7 @@ sub _precacheArtistImage {
 
 		# if user wants us to save a copy on the disk, write to our image folder instead
 		if ($imageFolder) {
-			$file = Plugins::MusicArtistInfo::Importer::filename($url, $imageFolder, $artist->{name});
+			$file = Plugins::MusicArtistInfo::Importer::filename($url, $imageFolder, Plugins::MusicArtistInfo::Common::normalizeArtistName($artist->{name}));
 		}
 		else {
 			$file = catdir( $cachedir, 'imgproxy_' . Digest::MD5::md5_hex($url) );

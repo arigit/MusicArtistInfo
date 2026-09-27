@@ -26,6 +26,8 @@ my $serverprefs = preferences('server');
 sub initPlugin {
 	my $class = shift;
 
+	_hookContributorPictureScan() if CAN_LMS_ARTIST_ARTWORK;
+
 	return unless $prefs->get('runImporter') && ($serverprefs->get('precacheArtwork') || $prefs->get('lookupArtistPictures') || $prefs->get('lookupCoverArt') || $prefs->get('replaceOnlineGenres'));
 
 	Slim::Music::Import->addImporter($class, {
@@ -42,6 +44,30 @@ sub initPlugin {
 	}
 
 	return 1;
+}
+
+# LMS 9.1+ assigns artist pictures in its own scanner, looking for files named after the raw
+# contributor name only. Teach it to also look for "Given Family" when tagged "Family, Given".
+sub _hookContributorPictureScan {
+	require Slim::Music::ContributorPictureScan;
+
+	my $sanitizedNameVariants = Slim::Music::ContributorPictureScan->can('sanitizedNameVariants') || do {
+		$log->warn("Can't find Slim::Music::ContributorPictureScan::sanitizedNameVariants - artist name normalization disabled for LMS' picture scan");
+		return;
+	};
+
+	no warnings 'redefine';
+	*Slim::Music::ContributorPictureScan::sanitizedNameVariants = sub {
+		my ($name) = @_;
+
+		my $normalized = Plugins::MusicArtistInfo::Common::normalizeArtistName($name);
+		return $sanitizedNameVariants->(@_) if $normalized eq $name;
+
+		return [ Slim::Utils::Misc::uniq(
+			@{$sanitizedNameVariants->($normalized)},
+			@{$sanitizedNameVariants->($name)},
+		) ];
+	};
 }
 
 sub startScan {

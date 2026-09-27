@@ -247,7 +247,43 @@ sub fileInFolder {
 	return $file;
 }
 
+# Our tags store (some) person names as "Family, Given [Middle...]" - eg. composers.
+# Flip them to "Given Family" so the same artist gets the same picture, regardless of
+# whether it was tagged as performer ("Miles Davis") or composer ("Davis, Miles").
+# Try hard not to break band names like "Earth, Wind & Fire" or "Tyler, The Creator".
+sub normalizeArtistName {
+	my ($name) = @_;
+
+	return $name unless defined $name && $name =~ /,/;
+
+	my ($family, $given, $suffix) = $name =~ /^\s*([^,]+?)\s*,\s*([^,]+?)\s*(?:,\s*([^,]+?)\s*)?$/;
+
+	return $name unless $family && $given;
+	return $name if $suffix && $suffix !~ /^(?:jr|sr|[ivx]+)\.?$/i;
+	return $name if $given =~ /^(?:jr|sr|[ivx]+)\.?$/i;                # "Harry Connick, Jr."
+	return $name if $given =~ /^(?:the|a|an)\s/i;                      # "Tyler, The Creator"
+	return $name if "$family $given" =~ /&|\+|\/|\band\b|\d/i;         # "Blood, Sweat & Tears", "10,000 Maniacs"
+
+	# "Miles Davis, John Coltrane" is a list of artists, not "Family, Given" - but "de Falla, Manuel María" is fine
+	return $name if $family =~ /^\p{Lu}\S*\s+\S/ && $given =~ /\S\s+\S/;
+
+	return join(' ', grep { $_ } $given, $family, $suffix);
+}
+
 sub getLocalnameVariants {
+	my ($name) = @_;
+
+	# prefer the "Given Family" file name, but still accept a file named after the raw tag
+	my $normalized = normalizeArtistName($name);
+	if ($normalized ne $name) {
+		my %seen;
+		return [ grep { !$seen{$_}++ } @{_getLocalnameVariants($normalized)}, @{_getLocalnameVariants($name)} ];
+	}
+
+	return _getLocalnameVariants($name);
+}
+
+sub _getLocalnameVariants {
 	my ($name) = @_;
 
 	# Remove wildcards and other stuff potentially conflicting with file system limitations

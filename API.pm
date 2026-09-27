@@ -53,7 +53,8 @@ sub getArtistPhoto {
 	my ( $class, $cb, $args ) = @_;
 
 	my $query = _getArtistQueryParams($args);
-	my $url = sprintf(ARTISTIMAGESEARCH_URL, uri_escape_utf8($args->{artist})) . $query;
+	my $artist = Plugins::MusicArtistInfo::Common::normalizeArtistName($args->{artist});
+	my $url = sprintf(ARTISTIMAGESEARCH_URL, uri_escape_utf8($artist)) . $query;
 	my $cacheKey = "mai_artist_artwork_$url";
 
 	my $cached = $cache->get($cacheKey);

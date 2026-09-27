@@ -448,7 +448,7 @@ sub _getArtistPhotos {
 	my $results = {};
 
 	my $args = {
-		artist => $artist,
+		artist => Plugins::MusicArtistInfo::Common::normalizeArtistName($artist),
 		artist_id => $artist_id
 	};
 
